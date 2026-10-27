@@ -26,7 +26,7 @@
   声: <select id="voice">
     <option>Orus</option><option>Iapetus</option><option>Charon</option><option>Rasalgethi</option>
   </select>
-  方式: <select id="mode"><option value="hold">押している間だけ話す</option><option value="low">常時通話（感度 低）</option><option value="high">常時通話（感度 高）</option></select>
+  方式: <select id="mode"><option value="tap">タップして話す（黙ると自動で送る）</option><option value="hold">押している間だけ話す</option><option value="low">常時通話（感度 低）</option><option value="high">常時通話（感度 高）</option></select>
   声の大きさのしきい値: <input id="th" type="number" value="0.02" step="0.005" style="width:5em">
 </div>
 <div class="row">
@@ -122,7 +122,10 @@ async function startMic() {
     peakRms = Math.max(peakRms, rms);
     const msg = JSON.stringify({ realtimeInput: { audio: { data: b64FromInt16(i16), mimeType: 'audio/pcm;rate=16000' } } });
     if (isAuto()) { $('level').textContent = rms.toFixed(3); ws.send(msg); return; }
+    talkMs += 100;
+    if (isTap() && talkMs >= TAP_MAX_MS) { pressEnd(); return; }
     if (!activitySent) {
+      if (isTap() && talkMs >= TAP_WAIT_MS) { pressEnd(); return; }
       // 声が出るまでは送らずに直近の数個だけ溜める（言葉の頭が切れないように）
       pending.push(msg); if (pending.length > 5) pending.shift();
       if (rms < Number($('th').value)) return;
@@ -132,22 +135,30 @@ async function startMic() {
       return;
     }
     ws.send(msg);
+    if (isTap() && !ending) {
+      silentMs = rms < Number($('th').value) ? silentMs + 100 : 0;
+      if (silentMs >= TAP_SILENCE_MS) pressEnd();
+    }
   };
   ctxIn.createMediaStreamSource(micStream).connect(workletNode);
 }
 
-let activitySent = false, pending = [], peakRms = 0, ready = false;
+let activitySent = false, pending = [], peakRms = 0, ready = false, talkMs = 0, silentMs = 0;
+// タップ方式: 0.8秒黙ったら送る。声が出ないまま8秒、または話し始めから15秒で打ち切る
+const TAP_SILENCE_MS = 800, TAP_WAIT_MS = 8000, TAP_MAX_MS = 15000;
 function pressStart() {
   if (talking || ending || !ws || ws.readyState !== 1) return;
   stopPlayback();
-  talking = true; activitySent = false; pending = []; peakRms = 0;
+  talking = true; activitySent = false; pending = []; peakRms = 0; talkMs = 0; silentMs = 0;
   $('ptt').classList.add('on');
+  if (isTap()) ptt.textContent = '聞いています…（黙ると送ります。もう一度タップでも送れます）';
   curU = null;
 }
 let ending = false;
 function pressEnd() {
   if (!talking || ending) return;
   $('ptt').classList.remove('on');
+  if (isTap()) ptt.textContent = PTT_LABEL.tap;
   if (!activitySent) {
     talking = false;
     log('sys', `（声が届かなかったため送信しませんでした。最大の声の大きさ ${peakRms.toFixed(3)}）`);
@@ -234,17 +245,24 @@ function cleanup() {
 }
 
 const ptt = $('ptt');
-function isAuto() { return $('mode').value !== 'hold'; }
-function applyMode() { ptt.hidden = isAuto(); $('auto').hidden = !isAuto(); }
+function isAuto() { return $('mode').value === 'low' || $('mode').value === 'high'; }
+function isTap() { return $('mode').value === 'tap'; }
+const PTT_LABEL = { hold: '押している間だけ話す（パソコンはスペースキーでも可）', tap: 'タップして話す（黙ると自動で送ります）' };
+function applyMode() { ptt.hidden = isAuto(); $('auto').hidden = !isAuto(); if (!isAuto()) ptt.textContent = PTT_LABEL[$('mode').value]; }
 $('mode').onchange = applyMode; applyMode();
-ptt.addEventListener('pointerdown', e => { e.preventDefault(); ptt.setPointerCapture(e.pointerId); pressStart(); });
-ptt.addEventListener('pointerup', pressEnd);
-ptt.addEventListener('pointercancel', pressEnd);
+ptt.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (isTap()) { talking ? pressEnd() : pressStart(); return; }
+  ptt.setPointerCapture(e.pointerId); pressStart();
+});
+ptt.addEventListener('pointerup', () => { if (!isTap()) pressEnd(); });
+ptt.addEventListener('pointercancel', () => { if (!isTap()) pressEnd(); });
 document.addEventListener('keydown', e => {
   if (e.code !== 'Space' || e.repeat || isAuto()) return;
-  e.preventDefault(); pressStart();
+  e.preventDefault();
+  if (isTap()) { talking ? pressEnd() : pressStart(); } else pressStart();
 });
-document.addEventListener('keyup', e => { if (e.code === 'Space' && !isAuto()) { e.preventDefault(); pressEnd(); } });
+document.addEventListener('keyup', e => { if (e.code === 'Space' && !isAuto() && !isTap()) { e.preventDefault(); pressEnd(); } });
 </script>
 </body>
 </html>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>電話シミュレータ 検証2</title>
+<title>電話シミュレータ 検証3</title>
 <meta name="robots" content="noindex, nofollow">
 <style>
   body { font-family: system-ui, sans-serif; margin: 16px; max-width: 720px; background: #fff; color: #222; }
@@ -16,16 +16,17 @@
   #status { font-weight: bold; }
   #log { border: 1px solid #ccc; border-radius: 8px; padding: 8px; min-height: 200px; white-space: pre-wrap; font-size: .95rem; }
   .u { color: #0a4; } .m { color: #04a; } .sys { color: #888; font-size: .85rem; }
+  #auto { padding: 20px; border-radius: 8px; background: #e8ffe8; font-size: 1.1rem; }
   #usage { font-size: .85rem; color: #555; }
 </style>
 </head>
 <body>
-<h1>電話シミュレータ 検証2（使い捨て）— スズケン沼津支店／甚大な場面</h1>
+<h1>電話シミュレータ 検証3（使い捨て）— スズケン沼津支店／甚大な場面</h1>
 <div class="row">
   声: <select id="voice">
     <option>Orus</option><option>Iapetus</option><option>Charon</option><option>Rasalgethi</option>
   </select>
-  ボタン: <select id="mode"><option value="hold">押している間だけ</option><option value="toggle">1回押して切り替え</option></select>
+  方式: <select id="mode"><option value="hold">押している間だけ話す</option><option value="low">常時通話（感度 低）</option><option value="high">常時通話（感度 高）</option></select>
   声の大きさのしきい値: <input id="th" type="number" value="0.02" step="0.005" style="width:5em">
 </div>
 <div class="row">
@@ -34,6 +35,7 @@
   <span id="status">待機中</span>
 </div>
 <button id="ptt" disabled>押している間だけ話す（パソコンはスペースキーでも可）</button>
+<div id="auto" hidden>常時通話: 話しかければ相手が答えます。マイクの音の大きさ <span id="level">-</span></div>
 <p id="usage"></p>
 <div id="log"></div>
 
@@ -110,13 +112,16 @@ async function startMic() {
   workletNode = new AudioWorkletNode(ctxIn, 'p');
   log('sys', `録音の標本化周波数: ${ctxIn.sampleRate} Hz`);
   workletNode.port.onmessage = e => {
-    if (!talking || !ws || ws.readyState !== 1) return;
+    if (!ws || ws.readyState !== 1) return;
+    if (!isAuto() && !talking) return;
+    if (isAuto() && !ready) return;
     const f = to16k(e.data, ctxIn.sampleRate), i16 = new Int16Array(f.length);
     let sum = 0;
     for (let i = 0; i < f.length; i++) { i16[i] = Math.max(-1, Math.min(1, f[i])) * 0x7fff; sum += f[i] * f[i]; }
     const rms = Math.sqrt(sum / f.length);
     peakRms = Math.max(peakRms, rms);
     const msg = JSON.stringify({ realtimeInput: { audio: { data: b64FromInt16(i16), mimeType: 'audio/pcm;rate=16000' } } });
+    if (isAuto()) { $('level').textContent = rms.toFixed(3); ws.send(msg); return; }
     if (!activitySent) {
       // 声が出るまでは送らずに直近の数個だけ溜める（言葉の頭が切れないように）
       pending.push(msg); if (pending.length > 5) pending.shift();
@@ -131,7 +136,7 @@ async function startMic() {
   ctxIn.createMediaStreamSource(micStream).connect(workletNode);
 }
 
-let activitySent = false, pending = [], peakRms = 0;
+let activitySent = false, pending = [], peakRms = 0, ready = false;
 function pressStart() {
   if (talking || ending || !ws || ws.readyState !== 1) return;
   stopPlayback();
@@ -167,7 +172,7 @@ async function onMessage(ev) {
     // 受話器を取らせるきっかけ。相手から第一声を言わせる
     ws.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: '（電話が鳴っています。受話器を取って第一声だけを言ってください）' }] }], turnComplete: true } }));
     stopRing && stopRing();
-    $('ptt').disabled = false;
+    $('ptt').disabled = false; ready = true;
   }
   const sc = msg.serverContent;
   if (sc) {
@@ -177,10 +182,15 @@ async function onMessage(ev) {
         playPcm24k(p.inlineData.data);
       }
     }
-    if (sc.inputTranscription?.text) { curU ??= log('u', '参加者: '); curU.textContent += sc.inputTranscription.text; }
+    if (sc.inputTranscription?.text) {
+      curU ??= log('u', '参加者: '); curU.textContent += sc.inputTranscription.text;
+      // 常時通話では話し終わりが分からないので、最後に聞き取れた時点から測る
+      if (isAuto()) { releasedAt = performance.now(); waitingFirstAudio = true; }
+    }
     if (sc.outputTranscription?.text) { curM ??= log('m', '相手: '); curM.textContent += sc.outputTranscription.text; }
     if (sc.interrupted) { stopPlayback(); log('sys', '（割り込み）'); }
-    if (sc.turnComplete) { curM = null; curU = null; }
+    if (sc.turnComplete || (isAuto() && sc.inputTranscription?.text && curM)) { curM = null; }
+    if (sc.turnComplete) curU = null;
   }
   if (msg.usageMetadata) {
     const u = msg.usageMetadata;
@@ -191,7 +201,7 @@ async function onMessage(ev) {
 
 let stopRing = null;
 $('call').onclick = async () => {
-  $('call').disabled = true; $('log').textContent = ''; $('usage').textContent = '';
+  $('call').disabled = true; $('mode').disabled = true; $('voice').disabled = true; ready = false; $('log').textContent = ''; $('usage').textContent = '';
   try {
     status('呼び出し中…'); stopRing = ring();
     // iPadでは音声の再生・録音の準備をタップの直後（await の前）に作っておかないと止まったままになる
@@ -199,7 +209,7 @@ $('call').onclick = async () => {
     ctxIn = new AudioContext();
     await startMic();
     const k = new URLSearchParams(location.search).get('k') || '';
-    const r = await fetch(`${GAS_URL}?k=${encodeURIComponent(k)}&voice=${$('voice').value}`).then(r => r.json());
+    const r = await fetch(`${GAS_URL}?k=${encodeURIComponent(k)}&voice=${$('voice').value}&vad=${isAuto() ? $('mode').value : 'off'}`).then(r => r.json());
     if (r.error) throw new Error(r.error);
     ws = new WebSocket(`${WS_BASE}?access_token=${encodeURIComponent(r.token)}`);
     ws.onopen = () => ws.send(JSON.stringify({ setup: r.setup }));
@@ -208,7 +218,7 @@ $('call').onclick = async () => {
     ws.onclose = e => { log('sys', `切断（code ${e.code} ${e.reason}） 通話時間 ${Math.round((Date.now() - callStart) / 1000)} 秒`); cleanup(); };
     callStart = Date.now();
     $('hang').disabled = false;
-    log('sys', `声: ${$('voice').value}`);
+    log('sys', `声: ${$('voice').value}／方式: ${$('mode').selectedOptions[0].text}`);
   } catch (e) {
     log('sys', 'エラー: ' + e.message); stopRing && stopRing(); cleanup();
   }
@@ -220,24 +230,21 @@ function cleanup() {
   micStream?.getTracks().forEach(t => t.stop());
   ctxIn?.close(); ctxIn = null;
   ctxOut?.close(); ctxOut = null;
-  $('ptt').disabled = true; $('hang').disabled = true; $('call').disabled = false; status('待機中');
+  $('ptt').disabled = true; $('hang').disabled = true; $('call').disabled = false; $('mode').disabled = false; $('voice').disabled = false; ready = false; $('level').textContent = '-'; status('待機中');
 }
 
 const ptt = $('ptt');
-const isToggle = () => $('mode').value === 'toggle';
-ptt.addEventListener('pointerdown', e => {
-  e.preventDefault();
-  if (isToggle()) { talking ? pressEnd() : pressStart(); return; }
-  ptt.setPointerCapture(e.pointerId); pressStart();
-});
-ptt.addEventListener('pointerup', () => { if (!isToggle()) pressEnd(); });
-ptt.addEventListener('pointercancel', () => { if (!isToggle()) pressEnd(); });
+function isAuto() { return $('mode').value !== 'hold'; }
+function applyMode() { ptt.hidden = isAuto(); $('auto').hidden = !isAuto(); }
+$('mode').onchange = applyMode; applyMode();
+ptt.addEventListener('pointerdown', e => { e.preventDefault(); ptt.setPointerCapture(e.pointerId); pressStart(); });
+ptt.addEventListener('pointerup', pressEnd);
+ptt.addEventListener('pointercancel', pressEnd);
 document.addEventListener('keydown', e => {
-  if (e.code !== 'Space' || e.repeat) return;
-  e.preventDefault();
-  if (isToggle()) { talking ? pressEnd() : pressStart(); } else pressStart();
+  if (e.code !== 'Space' || e.repeat || isAuto()) return;
+  e.preventDefault(); pressStart();
 });
-document.addEventListener('keyup', e => { if (e.code === 'Space') { e.preventDefault(); if (!isToggle()) pressEnd(); } });
+document.addEventListener('keyup', e => { if (e.code === 'Space' && !isAuto()) { e.preventDefault(); pressEnd(); } });
 </script>
 </body>
 </html>

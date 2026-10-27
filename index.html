@@ -143,9 +143,9 @@ async function startMic() {
   ctxIn.createMediaStreamSource(micStream).connect(workletNode);
 }
 
-let activitySent = false, pending = [], peakRms = 0, ready = false, talkMs = 0, silentMs = 0;
-// タップ方式: 0.8秒黙ったら送る。声が出ないまま8秒、または話し始めから15秒で打ち切る
-const TAP_SILENCE_MS = 800, TAP_WAIT_MS = 8000, TAP_MAX_MS = 15000;
+let activitySent = false, pending = [], peakRms = 0, ready = false, talkMs = 0, silentMs = 0, noReplyTimer = null;
+// タップ方式: 1.2秒黙ったら送る。声が出ないまま8秒、または話し始めから15秒で打ち切る
+const TAP_SILENCE_MS = 1200, TAP_WAIT_MS = 8000, TAP_MAX_MS = 15000;
 function pressStart() {
   if (talking || ending || !ws || ws.readyState !== 1) return;
   stopPlayback();
@@ -171,6 +171,8 @@ function pressEnd() {
     if (!ws || ws.readyState !== 1) return;
     ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
     releasedAt = performance.now(); waitingFirstAudio = true;
+    clearTimeout(noReplyTimer);
+    noReplyTimer = setTimeout(() => { if (waitingFirstAudio) log('sys', '（10秒たっても応答がありません。本番では「お電話が遠いようです」と出す）'); }, 10000);
   }, 300);
   log('sys', `（最大の声の大きさ ${peakRms.toFixed(3)}）`);
 }

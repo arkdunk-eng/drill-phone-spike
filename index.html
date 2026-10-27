@@ -144,8 +144,8 @@ async function startMic() {
 }
 
 let activitySent = false, pending = [], peakRms = 0, ready = false, talkMs = 0, silentMs = 0, noReplyTimer = null;
-// タップ方式: 1.2秒黙ったら送る。声が出ないまま8秒、または話し始めから15秒で打ち切る
-const TAP_SILENCE_MS = 1200, TAP_WAIT_MS = 8000, TAP_MAX_MS = 15000;
+// タップ方式: 1.5秒黙ったら送る。声が出ないまま8秒、または話し始めから25秒で打ち切る
+const TAP_SILENCE_MS = 1500, TAP_WAIT_MS = 8000, TAP_MAX_MS = 25000;
 function pressStart() {
   if (talking || ending || !ws || ws.readyState !== 1) return;
   stopPlayback();
